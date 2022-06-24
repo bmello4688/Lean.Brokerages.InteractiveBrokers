@@ -3110,7 +3110,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         symbol.ID.Market,
                         symbol,
                         symbol.SecurityType,
-                        _algorithm.Portfolio.CashBook.AccountCurrency);
+                        _algorithm?.Portfolio.CashBook.AccountCurrency ?? GetCashBalance().First().Currency);
 
             // setting up lookup request
             var contract = new Contract
