@@ -34,6 +34,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// Future
         /// </summary>
         public const string Future = "FUT";
+        public const string ContinuousFuture = "CONTFUT";
 
         /// <summary>
         /// Index
@@ -44,6 +45,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// FOP = options on futures
         /// </summary>
         public const string FutureOption = "FOP";
+
+        /// <summary>
+        /// Crypto
+        /// </summary>
+        public const string Crypto = "CRYPTO";
 
         /// <summary>
         /// Cash

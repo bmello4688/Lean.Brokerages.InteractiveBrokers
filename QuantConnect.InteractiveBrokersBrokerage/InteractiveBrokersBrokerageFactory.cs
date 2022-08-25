@@ -115,6 +115,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 agentDescription,
                 loadExistingHoldings);
             Composer.Instance.AddPart<IDataQueueHandler>(ib);
+            Composer.Instance.AddPart<IHistoryProvider>(ib);
 
             return ib;
         }

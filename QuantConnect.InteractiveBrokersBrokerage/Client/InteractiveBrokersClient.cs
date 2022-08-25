@@ -160,6 +160,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// </summary>
         public event EventHandler<FamilyCodesEventArgs> FamilyCodes;
 
+        /// <summary>
+        /// HeadTimestamp event handler
+        /// </summary>
+        public event EventHandler<HeadTimestampEventArgs> HeadTimestamp;
+
         #endregion
 
         /// <summary>
@@ -502,6 +507,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
             OnFamilyCodes(new FamilyCodesEventArgs(familyCodes));
         }
 
+        public override void headTimestamp(int reqId, string headTimestamp)
+        {
+            OnHeadTimestamp(new HeadTimestampEventArgs(reqId, headTimestamp));
+        }
+
         #endregion
 
         #region Event Invocators
@@ -720,6 +730,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         protected virtual void OnFamilyCodes(FamilyCodesEventArgs e)
         {
             FamilyCodes?.Invoke(this, e);
+        }
+
+        /// <summary>
+        /// FamilyCodes event invocator
+        /// </summary>
+        protected virtual void OnHeadTimestamp(HeadTimestampEventArgs e)
+        {
+            HeadTimestamp?.Invoke(this, e);
         }
 
         #endregion

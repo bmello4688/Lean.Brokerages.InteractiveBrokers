@@ -37,6 +37,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Bar = QuantConnect.Data.Market.Bar;
@@ -50,7 +51,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
     /// The Interactive Brokers brokerage
     /// </summary>
     [BrokerageFactory(typeof(InteractiveBrokersBrokerageFactory))]
-    public sealed class InteractiveBrokersBrokerage : Brokerage, IDataQueueHandler, IDataQueueUniverseProvider
+    public sealed partial class InteractiveBrokersBrokerage : Brokerage, IDataQueueHandler, IDataQueueUniverseProvider
     {
         /// <summary>
         /// The default gateway version to use
@@ -167,12 +168,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             return account.Contains("F");
         }
 
-        /// <summary>
-        /// Creates a new InteractiveBrokersBrokerage using values from configuration
-        /// </summary>
-        public InteractiveBrokersBrokerage() : base("Interactive Brokers Brokerage")
-        {
-        }
+        public static InteractiveBrokersBrokerage Instance => _instance;
 
         /// <summary>
         /// Creates a new InteractiveBrokersBrokerage using values from configuration:
@@ -189,6 +185,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         public InteractiveBrokersBrokerage(IAlgorithm algorithm, IOrderProvider orderProvider, ISecurityProvider securityProvider, IDataAggregator aggregator, IMapFileProvider mapFileProvider)
             : this(algorithm, orderProvider, securityProvider, aggregator, mapFileProvider, Config.Get("ib-account"))
         {
+            if (_instance != null)
+                throw new InvalidOperationException("Only create a single instance of IBKR Brokerage.");
+
+            _instance = this;
         }
 
         /// <summary>
@@ -218,6 +218,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 Config.GetValue("ib-agent-description", IB.AgentDescription.Individual)
                 )
         {
+            if (_instance != null)
+                throw new InvalidOperationException("Only create a single instance of IBKR Brokerage.");
+
+            _instance = this;
         }
 
         /// <summary>
@@ -256,6 +260,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             bool loadExistingHoldings = true)
             : base("Interactive Brokers Brokerage")
         {
+            if (_instance != null)
+                throw new InvalidOperationException("Only create a single instance of IBKR Brokerage.");
+
+            _instance = this;
+
             Initialize(
                 algorithm,
                 orderProvider,
@@ -278,6 +287,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// Provides public access to the underlying IBClient instance
         /// </summary>
         public IB.InteractiveBrokersClient Client => _client;
+
+        public int DataPointCount => throw new NotImplementedException();
 
         /// <summary>
         /// Places a new order and assigns a new broker ID to the order
@@ -1028,6 +1039,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 Log.Trace($"InteractiveBrokersBrokerage.HandleConnectionClosed(): API client disconnected [Server Version: {_client.ClientSocket.ServerVersion}].");
                 _connectEvent.Set();
             };
+
+
         }
 
         /// <summary>
@@ -1329,8 +1342,23 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
             CheckRateLimiting();
 
-            // make the request for data
-            _client.ClientSocket.reqContractDetails(requestId, contract);
+            if (contract.SecType == IB.SecurityType.Future)
+            {
+                Contract contract2 = new()
+                {
+                    Symbol = contract.Symbol,
+                    SecType = $"{contract.SecType}+{IB.SecurityType.ContinuousFuture}",
+                    Exchange = contract.Exchange,
+                };
+
+                // make the request for data
+                _client.ClientSocket.reqContractDetails(requestId, contract2);
+            }
+            else
+            {
+                // make the request for data
+                _client.ClientSocket.reqContractDetails(requestId, contract);
+            }
 
             if (!manualResetEvent.WaitOne(timeout * 1000))
             {
@@ -2354,6 +2382,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case SecurityType.Future:
                     return IB.SecurityType.Future;
 
+                case SecurityType.Crypto:
+                    return IB.SecurityType.Crypto;
+
                 default:
                     throw new ArgumentException($"The {type} security type is not currently supported.");
             }
@@ -2384,7 +2415,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     return SecurityType.Forex;
 
                 case IB.SecurityType.Future:
+                case IB.SecurityType.ContinuousFuture:
                     return SecurityType.Future;
+
+                case IB.SecurityType.Crypto:
+                    return SecurityType.Crypto;
 
                 default:
                     throw new NotSupportedException(
@@ -2425,22 +2460,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <returns></returns>
         private string ConvertResolutionToDuration(Resolution resolution)
         {
-            switch (resolution)
+            return resolution switch
             {
-                case Resolution.Tick:
-                case Resolution.Second:
-                    return "1800 S";
-
-                case Resolution.Minute:
-                    return "1 D";
-
-                case Resolution.Hour:
-                    return "1 M";
-
-                case Resolution.Daily:
-                default:
-                    return "1 Y";
-            }
+                Resolution.Tick or Resolution.Second => "1800 S",
+                Resolution.Minute => "1 D",
+                Resolution.Hour => "1 M",
+                _ => $"1 Y",
+            };
         }
 
         private static TradeBar ConvertTradeBar(Symbol symbol, Resolution resolution, IB.HistoricalDataEventArgs historyBar, decimal priceMagnifier)
@@ -2586,6 +2612,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         }
 
         private TimeSpan _brokerTimeDiff = new TimeSpan(0);
+        private Dictionary<Symbol, Security> leanToNasdaqSymbol = new();
+        private static InteractiveBrokersBrokerage _instance;
 
         /// <summary>
         /// Sets the job we're subscribing for
@@ -3182,234 +3210,6 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         }
 
         /// <summary>
-        /// Gets the history for the requested security
-        /// </summary>
-        /// <param name="request">The historical data request</param>
-        /// <returns>An enumerable of bars covering the span specified in the request</returns>
-        /// <remarks>For IB history limitations see https://www.interactivebrokers.com/en/software/api/apiguide/tables/historical_data_limitations.htm </remarks>
-        public override IEnumerable<BaseData> GetHistory(HistoryRequest request)
-        {
-            if (!IsConnected)
-            {
-                OnMessage(
-                    new BrokerageMessageEvent(
-                        BrokerageMessageType.Warning,
-                        "GetHistoryWhenDisconnected",
-                        "History requests cannot be submitted when disconnected."));
-                yield break;
-            }
-
-            // skipping universe and canonical symbols
-            if (!CanSubscribe(request.Symbol) ||
-                (request.Symbol.ID.SecurityType.IsOption() && request.Symbol.IsCanonical()))
-            {
-                yield break;
-            }
-
-            // skip invalid security types
-            if (request.Symbol.SecurityType != SecurityType.Equity &&
-                request.Symbol.SecurityType != SecurityType.Index &&
-                request.Symbol.SecurityType != SecurityType.Forex &&
-                request.Symbol.SecurityType != SecurityType.Cfd &&
-                request.Symbol.SecurityType != SecurityType.Future &&
-                request.Symbol.SecurityType != SecurityType.FutureOption &&
-                request.Symbol.SecurityType != SecurityType.Option &&
-                request.Symbol.SecurityType != SecurityType.IndexOption)
-            {
-                yield break;
-            }
-
-            // tick resolution not supported for now
-            if (request.Resolution == Resolution.Tick)
-            {
-                // TODO: upgrade IB C# API DLL
-                // In IB API version 973.04, the reqHistoricalTicks function has been added,
-                // which would now enable us to support history requests at Tick resolution.
-                yield break;
-            }
-
-            // preparing the data for IB request
-            var contract = CreateContract(request.Symbol, true);
-            var resolution = ConvertResolution(request.Resolution);
-            var duration = ConvertResolutionToDuration(request.Resolution);
-            var startTime = request.Resolution == Resolution.Daily ? request.StartTimeUtc.Date : request.StartTimeUtc;
-            var endTime = request.Resolution == Resolution.Daily ? request.EndTimeUtc.Date : request.EndTimeUtc;
-
-            Log.Trace($"InteractiveBrokersBrokerage::GetHistory(): Submitting request: {request.Symbol.Value} ({GetContractDescription(contract)}): {request.Resolution}/{request.TickType} {startTime} UTC -> {endTime} UTC");
-
-            DateTimeZone exchangeTimeZone;
-            if (!_symbolExchangeTimeZones.TryGetValue(request.Symbol, out exchangeTimeZone))
-            {
-                // read the exchange time zone from market-hours-database
-                exchangeTimeZone = MarketHoursDatabase.FromDataFolder().GetExchangeHours(request.Symbol.ID.Market, request.Symbol, request.Symbol.SecurityType).TimeZone;
-                _symbolExchangeTimeZones.Add(request.Symbol, exchangeTimeZone);
-            }
-
-            IEnumerable<BaseData> history;
-            if (request.TickType == TickType.Quote)
-            {
-                // Quotes need two separate IB requests for Bid and Ask,
-                // each pair of TradeBars will be joined into a single QuoteBar
-                var historyBid = GetHistory(request, contract, startTime, endTime, exchangeTimeZone, duration, resolution, HistoricalDataType.Bid);
-                var historyAsk = GetHistory(request, contract, startTime, endTime, exchangeTimeZone, duration, resolution, HistoricalDataType.Ask);
-
-                history = historyBid.Join(historyAsk,
-                    bid => bid.Time,
-                    ask => ask.Time,
-                    (bid, ask) => new QuoteBar(
-                        bid.Time,
-                        bid.Symbol,
-                        new Bar(bid.Open, bid.High, bid.Low, bid.Close),
-                        0,
-                        new Bar(ask.Open, ask.High, ask.Low, ask.Close),
-                        0,
-                        bid.Period));
-            }
-            else
-            {
-                // other assets will have TradeBars
-                history = GetHistory(request, contract, startTime, endTime, exchangeTimeZone, duration, resolution, HistoricalDataType.Trades);
-            }
-
-            // cleaning the data before returning it back to user
-            var requestStartTime = request.StartTimeUtc.ConvertFromUtc(exchangeTimeZone);
-            var requestEndTime = request.EndTimeUtc.ConvertFromUtc(exchangeTimeZone);
-
-            foreach (var bar in history.Where(bar => bar.Time >= requestStartTime && bar.EndTime <= requestEndTime))
-            {
-                if (request.Symbol.SecurityType == SecurityType.Equity ||
-                    request.ExchangeHours.IsOpen(bar.Time, bar.EndTime, request.IncludeExtendedMarketHours))
-                {
-                    yield return bar;
-                }
-            }
-
-            Log.Trace($"InteractiveBrokersBrokerage::GetHistory(): Download completed: {request.Symbol.Value} ({GetContractDescription(contract)})");
-        }
-
-        private IEnumerable<TradeBar> GetHistory(
-            HistoryRequest request,
-            Contract contract,
-            DateTime startTime,
-            DateTime endTime,
-            DateTimeZone exchangeTimeZone,
-            string duration,
-            string resolution,
-            string dataType)
-        {
-            const int timeOut = 60; // seconds timeout
-
-            var history = new List<TradeBar>();
-            var dataDownloading = new AutoResetEvent(false);
-            var dataDownloaded = new AutoResetEvent(false);
-
-            // This is needed because when useRTH is set to 1, IB will return data only
-            // during Equity regular trading hours (for any asset type, not only for equities)
-            var useRegularTradingHours = request.Symbol.SecurityType == SecurityType.Equity
-                ? Convert.ToInt32(!request.IncludeExtendedMarketHours)
-                : 0;
-
-            var symbolProperties = _symbolPropertiesDatabase.GetSymbolProperties(request.Symbol.ID.Market, request.Symbol, request.Symbol.SecurityType, Currencies.USD);
-            var priceMagnifier = symbolProperties.PriceMagnifier;
-
-            // making multiple requests if needed in order to download the history
-            while (endTime >= startTime)
-            {
-                var pacing = false;
-                var historyPiece = new List<TradeBar>();
-                var historicalTicker = GetNextId();
-
-                _requestInformation[historicalTicker] = $"[Id={historicalTicker}] GetHistory: {request.Symbol.Value} ({GetContractDescription(contract)})";
-
-                EventHandler<IB.HistoricalDataEventArgs> clientOnHistoricalData = (sender, args) =>
-                {
-                    if (args.RequestId == historicalTicker)
-                    {
-                        var bar = ConvertTradeBar(request.Symbol, request.Resolution, args, priceMagnifier);
-                        if (request.Resolution != Resolution.Daily)
-                        {
-                            bar.Time = bar.Time.ConvertFromUtc(exchangeTimeZone);
-                        }
-
-                        historyPiece.Add(bar);
-                        dataDownloading.Set();
-                    }
-                };
-
-                EventHandler<IB.HistoricalDataEndEventArgs> clientOnHistoricalDataEnd = (sender, args) =>
-                {
-                    if (args.RequestId == historicalTicker)
-                    {
-                        dataDownloaded.Set();
-                    }
-                };
-
-                EventHandler<IB.ErrorEventArgs> clientOnError = (sender, args) =>
-                {
-                    if (args.Id == historicalTicker)
-                    {
-                        if (args.Code == 162 && args.Message.Contains("pacing violation"))
-                        {
-                            // pacing violation happened
-                            pacing = true;
-                        }
-                        else
-                        {
-                            dataDownloaded.Set();
-                        }
-                    }
-                };
-
-                Client.Error += clientOnError;
-                Client.HistoricalData += clientOnHistoricalData;
-                Client.HistoricalDataEnd += clientOnHistoricalDataEnd;
-
-                CheckRateLimiting();
-
-                Client.ClientSocket.reqHistoricalData(historicalTicker, contract, endTime.ToStringInvariant("yyyyMMdd HH:mm:ss UTC"),
-                    duration, resolution, dataType, useRegularTradingHours, 2, false, new List<TagValue>());
-
-                var waitResult = 0;
-                while (waitResult == 0)
-                {
-                    waitResult = WaitHandle.WaitAny(new WaitHandle[] { dataDownloading, dataDownloaded }, timeOut * 1000);
-                }
-
-                Client.Error -= clientOnError;
-                Client.HistoricalData -= clientOnHistoricalData;
-                Client.HistoricalDataEnd -= clientOnHistoricalDataEnd;
-
-                if (waitResult == WaitHandle.WaitTimeout)
-                {
-                    if (pacing)
-                    {
-                        // we received 'pacing violation' error from IB. So we had to wait
-                        Log.Trace("InteractiveBrokersBrokerage::GetHistory() Pacing violation. Paused for {0} secs.", timeOut);
-                        continue;
-                    }
-
-                    Log.Trace("InteractiveBrokersBrokerage::GetHistory() History request timed out ({0} sec)", timeOut);
-                    break;
-                }
-
-                // if no data has been received this time, we exit
-                if (!historyPiece.Any())
-                {
-                    break;
-                }
-
-                var filteredPiece = historyPiece.OrderBy(x => x.Time);
-
-                history.InsertRange(0, filteredPiece);
-
-                // moving endTime to the new position to proceed with next request (if needed)
-                endTime = filteredPiece.First().Time.ConvertToUtc(exchangeTimeZone);
-            }
-
-            return history;
-        }
-
-        /// <summary>
         /// Gets the exchange the Symbol should be routed to
         /// </summary>
         /// <param name="securityType">SecurityType of the Symbol</param>
@@ -3432,6 +3232,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             ? _futuresCmeCrypto
                             : _futuresExchanges[market]
                         : market;
+
+                case SecurityType.Crypto:
+                    return "PAXOS";
 
                 default:
                     return "Smart";

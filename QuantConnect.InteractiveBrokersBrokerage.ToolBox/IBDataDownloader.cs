@@ -24,6 +24,8 @@ using QuantConnect.Data.Market;
 using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Brokerages.InteractiveBrokers;
+using System.Diagnostics;
+using System.Threading;
 
 namespace QuantConnect.ToolBox.IBDownloader
 {
@@ -32,18 +34,39 @@ namespace QuantConnect.ToolBox.IBDownloader
     /// </summary>
     public class IBDataDownloader : IDataDownloader, IDisposable
     {
-        private readonly InteractiveBrokersBrokerage _brokerage;
+        private InteractiveBrokersBrokerage _brokerage;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="IBDataDownloader"/> class
         /// </summary>
         public IBDataDownloader()
         {
-            var mapFileProvider = Composer.Instance.GetExportedValueByTypeName<IMapFileProvider>(
-                Config.Get("map-file-provider", "LocalDiskMapFileProvider"));
 
-            _brokerage = new InteractiveBrokersBrokerage(null, null, null, null, mapFileProvider);
-            _brokerage.Connect();
+            
+        }
+
+        private void Init()
+        {
+            _brokerage = InteractiveBrokersBrokerage.Instance;
+
+            if (_brokerage == null)
+            {
+                Stopwatch stopwatch = new();
+                stopwatch.Start();
+
+                while (_brokerage == null && stopwatch.ElapsedMilliseconds < 1000)
+                {
+                    _brokerage = InteractiveBrokersBrokerage.Instance;
+                    Thread.Sleep(10);
+                }
+
+                if (_brokerage == null)
+                {
+                    new InteractiveBrokersBrokerageFactory().CreateBrokerage(null, null);
+                    _brokerage = InteractiveBrokersBrokerage.Instance;
+                    _brokerage.Connect();
+                }
+            }
         }
 
 
@@ -54,16 +77,14 @@ namespace QuantConnect.ToolBox.IBDownloader
         /// <returns>Enumerable of base data for this symbol</returns>
         public IEnumerable<BaseData> Get(DataDownloaderGetParameters dataDownloaderGetParameters)
         {
+
+            Init();
+
             var symbol = dataDownloaderGetParameters.Symbol;
             var resolution = dataDownloaderGetParameters.Resolution;
             var startUtc = dataDownloaderGetParameters.StartUtc;
             var endUtc = dataDownloaderGetParameters.EndUtc;
             var tickType = dataDownloaderGetParameters.TickType;
-
-            if (tickType != TickType.Quote)
-            {
-                yield break;
-            }
 
             if (resolution == Resolution.Tick)
             {
@@ -81,6 +102,12 @@ namespace QuantConnect.ToolBox.IBDownloader
                 symbols = GetChainSymbols(symbol, true).ToList();
             }
 
+            if (symbol.SecurityType == SecurityType.Future)
+            {
+                //keep first
+                symbols.RemoveRange(1, symbols.Count - 1);
+            }
+
             var exchangeHours = MarketHoursDatabase.FromDataFolder().GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType);
             var dataTimeZone = MarketHoursDatabase.FromDataFolder().GetDataTimeZone(symbol.ID.Market, symbol, symbol.SecurityType);
 
@@ -88,7 +115,9 @@ namespace QuantConnect.ToolBox.IBDownloader
             {
                 var historyRequest = new HistoryRequest(startUtc,
                     endUtc,
-                    typeof(QuoteBar),
+                    tickType == TickType.Quote ? typeof(QuoteBar) :
+                    tickType == TickType.Trade ? typeof(TradeBar) :
+                    typeof(OpenInterest),
                     targetSymbol,
                     resolution,
                     exchangeHours: exchangeHours,
@@ -97,7 +126,7 @@ namespace QuantConnect.ToolBox.IBDownloader
                     includeExtendedMarketHours: true,
                     false,
                     DataNormalizationMode.Adjusted,
-                    TickType.Quote);
+                    tickType);
 
                 foreach (var baseData in _brokerage.GetHistory(historyRequest))
                 {
@@ -113,6 +142,8 @@ namespace QuantConnect.ToolBox.IBDownloader
         /// <param name="includeExpired">Include expired contracts</param>
         public IEnumerable<Symbol> GetChainSymbols(Symbol symbol, bool includeExpired)
         {
+            Init();
+
             return _brokerage.LookupSymbols(symbol, includeExpired);
         }
 
@@ -127,6 +158,8 @@ namespace QuantConnect.ToolBox.IBDownloader
         /// <param name="endTimeUtc">The ending date/time (UTC)</param>
         public void DownloadAndSave(List<Symbol> symbols, Resolution resolution, SecurityType securityType, TickType tickType, DateTime startTimeUtc, DateTime endTimeUtc)
         {
+            Init();
+
             var writer = new LeanDataWriter(Globals.DataFolder, resolution, securityType, tickType);
             writer.DownloadAndSave(_brokerage, symbols, startTimeUtc, endTimeUtc);
         }
